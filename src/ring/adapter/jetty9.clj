@@ -2,11 +2,12 @@
   "Adapter for the Jetty 9 server, with websocket support.
   Derived from ring.adapter.jetty"
   (:import [org.eclipse.jetty.server
-            Server Request ServerConnector
+            Handler Server Request ServerConnector
             HttpConfiguration HttpConnectionFactory
             ConnectionFactory SecureRequestCustomizer
             ProxyConnectionFactory]
-           [org.eclipse.jetty.servlet ServletContextHandler ServletHandler]
+           [org.eclipse.jetty.server.handler AbstractHandler HandlerList]
+           [org.eclipse.jetty.servlet ServletContextHandler ServletHolder]
            [org.eclipse.jetty.util.thread
             QueuedThreadPool ScheduledExecutorScheduler ThreadPool]
            [org.eclipse.jetty.util.ssl SslContextFactory SslContextFactory$Server]
@@ -58,18 +59,17 @@
    necessary to wrap the handler in a servlet context handler."
   [jetty-handler]
   (doto (ServletContextHandler.)
-    ;; avoid warnings
-    #_(.setContextPath "/*")
+    (.setContextPath "/*")
     (.setAllowNullPathInfo true)
     (JettyWebSocketServletContainerInitializer/configure nil)
-    (.setServletHandler jetty-handler)))
+    (.setHandler jetty-handler)))
 
 (defn ^:internal proxy-handler
   "Returns an Jetty Handler implementation for the given Ring handler."
   [handler]
   (wrap-proxy-handler
-   (proxy [ServletHandler] []
-     (doHandle [_ ^Request base-request ^HttpServletRequest request ^HttpServletResponse response]
+   (proxy [AbstractHandler] []
+     (handle [_ ^Request base-request ^HttpServletRequest request ^HttpServletResponse response]
        (try
          (let [request-map (build-request-map request)
                response-map (-> (handler request-map)
@@ -87,8 +87,8 @@
   "Returns an Jetty Handler implementation for the given Ring **async** handler."
   [handler]
   (wrap-proxy-handler
-   (proxy [ServletHandler] []
-     (doHandle [_ ^Request base-request ^HttpServletRequest request ^HttpServletResponse response]
+   (proxy [AbstractHandler] []
+     (handle [_ ^Request base-request ^HttpServletRequest request ^HttpServletResponse response]
        (try
          (let [^AsyncContext context (.startAsync request)]
            (handler
@@ -289,6 +289,15 @@
   :ws-max-idle-time  - the maximum idle time in milliseconds for a websocket connection (default 500000)
   :ws-max-text-message-size  - the maximum text message size in bytes for a websocket connection (default 65536)
   :client-auth - SSL client certificate authenticate, may be set to :need, :want or :none (defaults to :none)
+  :websockets - a map from context path to a map of handler fns:
+   {\"/context\" {:on-connect #(create-fn %)              ; ^Session ws-session
+                :on-text   #(text-fn % %2 %3 %4)         ; ^Session ws-session message
+                :on-bytes  #(binary-fn % %2 %3 %4 %5 %6) ; ^Session ws-session payload offset len
+                :on-close  #(close-fn % %2 %3 %4)        ; ^Session ws-session statusCode reason
+                :on-error  #(error-fn % %2 %3)}}         ; ^Session ws-session e
+   or a custom creator function take upgrade request as parameter and returns a handler fns map (or error info)
+   **Deprecated**: use `ring.adapter.jetty9/ws-upgrade-response` as your ring handler response to upgrade
+   a http connection to websocket.
   :h2? - enable http2 protocol on secure socket port
   :h2c? - enable http2 clear text on plain socket port
   :proxy? - enable the proxy protocol on plain socket port (see http://www.eclipse.org/jetty/documentation/9.4.x/configuring-connectors.html#_proxy_protocol)
@@ -297,15 +306,26 @@
   :sni-host-check? - enable host check for secure connection, default to true
   "
   [handler {:as options
-            :keys [configurator join? async?
+            :keys [websockets configurator join? async?
                    allow-null-path-info wrap-jetty-handler]
             :or {allow-null-path-info false
                  join? true
                  wrap-jetty-handler identity}}]
   (let [^Server s (create-server options)
         ring-app-handler (wrap-jetty-handler
-                          (if async? (proxy-async-handler handler) (proxy-handler handler)))]
-    (.setHandler s ring-app-handler)
+                          (if async? (proxy-async-handler handler) (proxy-handler handler)))
+        ws-handlers (map (fn [[context-path handler]]
+                           ;; FIXME: shared servlet context handler
+                           (doto (ServletContextHandler.)
+                             (.setContextPath context-path)
+                             (.setAllowNullPathInfo allow-null-path-info)
+                             (.addServlet ^ServletHolder (ws/proxy-ws-servlet handler options) "/")
+                             (JettyWebSocketServletContainerInitializer/configure nil)))
+                         websockets)
+        contexts (doto (HandlerList.)
+                   (.setHandlers
+                    (into-array Handler (reverse (conj ws-handlers ring-app-handler)))))]
+    (.setHandler s contexts)
     (when-let [c configurator]
       (c s))
     (.start s)
