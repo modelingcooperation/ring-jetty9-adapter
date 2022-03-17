@@ -1,0 +1,10 @@
+{:paths ["src"]
+ :deps {org.clojure/clojure {:mvn/version "1.10.3"}
+        ring/ring-servlet {:mvn/version "1.9.4"}
+        org.eclipse.jetty/jetty-server {:mvn/version "10.0.8"}
+        org.eclipse.jetty.websocket/websocket-jetty-api {:mvn/version "10.0.8"}
+        org.eclipse.jetty.websocket/websocket-jetty-server {:mvn/version "10.0.8"}
+        org.eclipse.jetty.websocket/websocket-servlet {:mvn/version "10.0.8"}
+        org.eclipse.jetty.http2/http2-server {:mvn/version "10.0.8"}
+        org.eclipse.jetty/jetty-alpn-server {:mvn/version "10.0.8"}
+        org.eclipse.jetty/jetty-alpn-java-server {:mvn/version "10.0.8"}}}
